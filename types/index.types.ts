@@ -4,14 +4,20 @@ export interface URLData {
     id: string
 }
 
-export interface VideoData {
+export interface VideoData extends GenericData {
     direct_url: string,
-    mimetype: string,
-    filesize: number,
     filename: string
+}
+
+export interface GenericData {
+    mimetype: string,
+    filesize: Filesize,
+    // [key: string]: any
 }
 
 export enum Types {
     FRONT = "FRONT",
     BACK = "BACK"
 }
+
+interface Filesize extends Number { }
