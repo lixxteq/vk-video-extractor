@@ -1,7 +1,7 @@
 import axios, { Axios, AxiosResponse } from 'axios';
 import { GenericData, Types, URLData, VideoData } from '../types/index.types'
 import { parse } from 'node-html-parser'
-import { createWriteStream, rmSync, accessSync } from 'fs';
+import { createWriteStream, rm, accessSync } from 'fs';
 import { default as p } from 'path'
 import { finished } from 'stream/promises';
 import { randomBytes } from 'node:crypto'
@@ -28,7 +28,7 @@ const URLREGEX = /"url\d{3,4}"\s*:\s*([^;,]+);?/g
 
 class Extractor {
     url: string
-    http: Axios
+    private http: Axios
     private _cached: VideoData | undefined = undefined
 
 
@@ -42,10 +42,19 @@ class Extractor {
     }
 
     public download = async (path?: string, filename?: string): Promise<string> => {
-        var _info = this._cached ?? await this.get_video_info()
-        if (path && !Extractor._path_exists(path)) throw new Error('Download path does not exist: ' + path)
+        var _info = this._cached ?? await this.getVideoInfo()
+        if (path && !Extractor._pathExists(path)) throw new Error('Download path does not exist: ' + path)
         var download_path = p.join(path ?? process.cwd(), filename ?? _info.filename)
         var res = await Extractor._download(_info.direct_url, download_path)
+        return download_path
+    }
+
+    public static downloadResourceByDirectUrl = async (url: string, path?: string, filename?: string): Promise<string> => {
+        if (path && !this._pathExists(path)) throw new Error('Download path does not exist: ' + path)
+        var _info = await this.getResourceInfo(url)
+        
+        var download_path = p.join(path ?? process.cwd(), filename ?? `${randomBytes(16).toString('hex')}.${mime.extension(_info.mimetype) === 'mpga' ? 'mp3' : mime.extension(_info.mimetype)}`)
+        var res = await this._download(url, download_path)
         return download_path
     }
 
@@ -57,44 +66,34 @@ class Extractor {
         return finished(_fds)
     }
 
-    public static downloadResourceByDirectUrl = async (url: string, path?: string, filename?: string): Promise<string> => {
-        if (path && !this._path_exists(path)) throw new Error('Download path does not exist: ' + path)
-        var _info = await this.get_resource_info(url)
-        console.debug(_info)
-        
-        var download_path = p.join(path ?? process.cwd(), filename ?? `${randomBytes(16).toString('hex')}.${mime.extension(_info.mimetype) === 'mpga' ? 'mp3' : mime.extension(_info.mimetype)}`)
-        var res = await this._download(url, download_path)
-        return download_path
-    } 
-
-    private static _delete = (path: string) => {
-        rmSync(path)
+    public static delete = async (path: string) => {
+        rm(path, (err) => { if (err) throw err })
     }
 
     private static _head = async (url: string) => { return await axios.head(url, { headers: {...BASEHEADERS, ...SRCHEADERS} }) }
 
-    public get_video_info = async (): Promise<VideoData> => {
-        var direct_url = await this.get_direct_url(true)
+    public getVideoInfo = async (): Promise<VideoData> => {
+        var direct_url = await this.getDirectUrl(true)
         var _head = await this.http.head(direct_url, { headers: SRCHEADERS })
         if (_head.status !== 200) throw new Error('Failed to get video info')
         
         var _info: VideoData = {
-            ...Extractor._extract_generic_data(_head), 
+            ...Extractor._extractGenericData(_head), 
             direct_url, 
             filename: _head.headers['content-disposition'].split(';')[1].split('=')[1].replace(/"/g, '')}
-        this._set_cached_info(_info)
+        this._setCachedInfo(_info)
         return _info
     }
 
-    public static get_resource_info = async (resource_url: string) => {
+    public static getResourceInfo = async (resource_url: string): Promise<GenericData> => {
         var _head = await this._head(resource_url)
         if (_head.status !== 200) throw new Error('Failed to get resource info')
         
-        var _info = this._extract_generic_data(_head)
+        var _info = this._extractGenericData(_head)
         return _info
     }
 
-    private static _extract_generic_data = (resp: AxiosResponse): GenericData => {
+    private static _extractGenericData = (resp: AxiosResponse): GenericData => {
         var _info: GenericData = {
             mimetype: resp.headers['content-type'],
             filesize: new Filesize(resp.headers['content-length'])
@@ -102,8 +101,8 @@ class Extractor {
         return _info
     }
 
-    public get_direct_url = async (data_pass?: boolean): Promise<string> => {
-        var player_url = this._create_player_url()
+    public getDirectUrl = async (data_pass?: boolean): Promise<string> => {
+        var player_url = this._createPlayerUrl()
         var player_page = await this.http.get(player_url.toString(), { responseType: 'document' })
         if (player_page.status !== 200) throw new Error('Failed to get player page')
         var _html = parse(player_page.data)
@@ -116,14 +115,14 @@ class Extractor {
         return _best_quality_match.replace(/["]+/g, '').replaceAll("\\", "")
     }
 
-    private _create_player_url = (): URL => {
+    private _createPlayerUrl = (): URL => {
         var base = new URL("https://vk.com/video_ext.php")
-        var { type, ...args } = { hd: "2", ...this._parse_url() }
+        var { type, ...args } = { hd: "2", ...this._parseUrl() }
         base.search = new URLSearchParams(args).toString()
         return base
     }
 
-    private _parse_url = (): URLData => {
+    private _parseUrl = (): URLData => {
         var u = new URL(this.url)
         var type = DOMAINS.FRONT.includes(u.hostname) ? Types.FRONT : DOMAINS.BACK.some(v => typeof v === "string" ? v === u.hostname : v.test(u.hostname)) ? Types.BACK : undefined
         if (!type) throw new Error('Unknown domain')
@@ -140,11 +139,11 @@ class Extractor {
         }
     }
 
-    private _parse_fallback = () => { }
+    private _parseFallback = () => { }
 
-    private _set_cached_info = (info: VideoData) => { this._cached = info }
+    private _setCachedInfo = (info: VideoData) => { this._cached = info }
 
-    private static _path_exists = (path: string) => {
+    private static _pathExists = (path: string) => {
         try {
             accessSync(path)
             return true
@@ -159,11 +158,11 @@ class Filesize extends Number {
         super(value)
     }
 
-    public as_megabytes = (): number => {
+    public asMegabytes = (): number => {
         return this.valueOf() / 1024 / 1024
     }
 
-    public as_bytes = (): number => {
+    public asBytes = (): number => {
         return this.valueOf()
     }
 }
